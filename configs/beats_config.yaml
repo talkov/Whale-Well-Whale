@@ -1,0 +1,41 @@
+seed: 42
+
+output_dir: path/to/output_dir
+checkpoint_dir: path/to/checkpoint_dir
+split_dir: path/to/split_dir
+
+shared_split_dir: path/to/shared_split_dir
+canonical_split_source: resnet_metadata
+metadata_csv: path/to/metadata.csv
+
+use_precomputed_embeddings: false
+raw_data_dir: path/to/raw_audio_dir
+beats_repo_dir: path/to/beats_repo
+beats_checkpoint_path: path/to/BEATs_iter3_plus_AS2M.pt
+
+sample_rate: 16000
+max_audio_seconds: 2.0
+pooling: mean
+
+batch_size: 32
+num_workers: 4
+epochs: 100
+lr: 1.0e-4
+weight_decay: 1.0e-4
+
+val_size: 0.10
+test_size: 0.10
+
+use_weighted_loss: true
+use_amp: false
+device: auto
+
+dropout: 0.0
+
+wandb_project: whale-classification
+wandb_run_name: beats_raw_audio
+
+use_wandb: true
+best_metric_name: val_best_f1
+default_eval_threshold: 0.5
+use_best_threshold_during_training: false
