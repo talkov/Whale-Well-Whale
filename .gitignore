@@ -27,32 +27,19 @@ build/
 dist/
 *.egg-info/
 
-# Training / experiment outputs
+# Experiment folders
 wandb/
 outputs/
 experiments/
 runs/
 checkpoints/
 
-# Model weights / checkpoints
-*.pt
-*.pth
-*.ckpt
-
-# Data
+# Data folders
 data/raw/
 data/processed/
 data/processed_test/
 data/filtered/
-data/beats_embeddings_bandpass_50_350/
 
-# Large generated arrays / audio
-*.npy
-*.npz
-*.wav
-*.flac
-*.aif
-
-# Local env files
+# Local environment files
 .env
 .env.*
