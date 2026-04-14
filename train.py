@@ -778,9 +778,6 @@ def main():
         val_best_threshold = float(val_metrics["best_f1_threshold"])
 
 
-        # Recompute validation metrics at the best threshold for logging consistency
-        # by rerunning metric calculations from cached outputs is ideal, but to keep trainer compact,
-        # we use the already available best-threshold summary values from val_metrics.
 
         log_dict = {
             "epoch": epoch,
