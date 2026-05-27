@@ -2,10 +2,10 @@ import time
 import json
 import random
 import argparse
-import importlib
 from pathlib import Path
-from typing import Any, Dict, Tuple, List
-
+from typing import Any, Dict, Tuple, List, Optional
+from data import beats_data, resnet18_data
+from models import beats_model, resnet18_model
 import yaml
 import numpy as np
 import pandas as pd
@@ -29,11 +29,23 @@ from torch.utils.data import DataLoader
 
 import wandb
 
+from dataclasses import dataclass
 
+
+
+@dataclass
+class CheckpointState:
+    model: nn.Module
+    optimizer: Optional[torch.optim.Optimizer]
+    scheduler: Any
+    start_epoch: int
+    best_score: float
+    best_threshold: float
 
 # ============================================================
 # CONFIG / UTILS
 # ============================================================
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="General frozen-backbone binary trainer")
@@ -106,8 +118,9 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer = None,
     scheduler: Any = None,
     map_location: str = "cpu",
-):
+) -> CheckpointState:
     ckpt = torch.load(path, map_location=map_location)
+
     model.load_state_dict(ckpt["model_state_dict"])
 
     if optimizer is not None and ckpt.get("optimizer_state_dict") is not None:
@@ -116,11 +129,14 @@ def load_checkpoint(
     if scheduler is not None and ckpt.get("scheduler_state_dict") is not None:
         scheduler.load_state_dict(ckpt["scheduler_state_dict"])
 
-    start_epoch = ckpt.get("epoch", -1) + 1
-    best_score = ckpt.get("best_score", -1.0)
-    best_threshold = ckpt.get("best_threshold", 0.5)
-
-    return model, optimizer, scheduler, start_epoch, best_score, best_threshold
+    return CheckpointState(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        start_epoch=ckpt.get("epoch", -1) + 1,
+        best_score=ckpt.get("best_score", -1.0),
+        best_threshold=ckpt.get("best_threshold", 0.5),
+    )
 
 
 def get_device(cfg: Dict[str, Any]) -> str:
@@ -129,22 +145,36 @@ def get_device(cfg: Dict[str, Any]) -> str:
     return cfg["device"]
 
 
-# ============================================================
-# DYNAMIC IMPORTS
-# ============================================================
 
-def get_builder_modules(model_type: str):
-    """
-    Expects:
-      data/beats_data.py        -> build_dataframe(cfg), build_dataloaders_from_splits(cfg, train_df, val_df, test_df)
-      data/resnet18_data.py     -> same interface
+DATA_BUILDERS = {
+    "beats": (
+        beats_data.build_dataframe,
+        beats_data.build_dataloaders_from_splits,
+    ),
+    "resnet18": (
+        resnet18_data.build_dataframe,
+        resnet18_data.build_dataloaders_from_splits,
+    ),
+}
 
-      models/beats_model.py     -> build_model(cfg)
-      models/resnet18_model.py  -> build_model(cfg)
-    """
-    data_module = importlib.import_module(f"data.{model_type}_data")
-    model_module = importlib.import_module(f"models.{model_type}_model")
-    return data_module, model_module
+
+MODEL_BUILDERS = {
+    "beats": beats_model.build_model,
+    "resnet18": resnet18_model.build_model,
+}
+
+
+def get_builders(model_type: str):
+    if model_type not in DATA_BUILDERS or model_type not in MODEL_BUILDERS:
+        raise ValueError(
+            f"Unknown model_type: {model_type}. "
+            f"Available options: {list(MODEL_BUILDERS.keys())}"
+        )
+
+    build_dataframe, build_dataloaders_from_splits = DATA_BUILDERS[model_type]
+    build_model = MODEL_BUILDERS[model_type]
+
+    return build_dataframe, build_dataloaders_from_splits, build_model
 
 
 # ============================================================
@@ -657,32 +687,24 @@ def main():
     print(f"Model type: {args.model_type}")
     print(f"Config: {args.config}")
 
-    data_module, model_module = get_builder_modules(args.model_type)
+    build_dataframe, build_dataloaders_from_splits, build_model = get_builders(args.model_type)
 
     shared_train_ids, shared_val_ids, shared_test_ids = build_or_load_shared_splits(cfg)
-
-    full_df = data_module.build_dataframe(cfg)
+    
+    full_df = build_dataframe(cfg)
     
     train_df = apply_shared_split(full_df, shared_train_ids, "train")
     val_df = apply_shared_split(full_df, shared_val_ids, "val")
     test_df = apply_shared_split(full_df, shared_test_ids, "test")
-
-    print("\nSplit sizes:")
-    print(f"  Train: {len(train_df)}")
-    print(f"  Val  : {len(val_df)}")
-    print(f"  Test : {len(test_df)}")
-
-    print("\nTrain class counts:")
-    print(train_df["label"].value_counts().sort_index())
-
-    train_loader, val_loader, test_loader = data_module.build_dataloaders_from_splits(
+    
+    train_loader, val_loader, test_loader = build_dataloaders_from_splits(
         cfg=cfg,
         train_df=train_df,
         val_df=val_df,
         test_df=test_df,
     )
-
-    model = model_module.build_model(cfg)
+    
+    model = build_model(cfg)
     model = model.to(device)
 
     # Safety check: backbone should already be frozen in model file.
@@ -717,14 +739,27 @@ def main():
     resume_ckpt = str(cfg.get("resume_checkpoint", "")).strip()
     if resume_ckpt and Path(resume_ckpt).exists():
         print(f"Resuming from checkpoint: {resume_ckpt}")
-        model, optimizer, scheduler, start_epoch, best_score, best_threshold = load_checkpoint(
+    
+        state = load_checkpoint(
             path=resume_ckpt,
             model=model,
             optimizer=optimizer,
             scheduler=scheduler,
             map_location=device,
         )
-        print(f"Resumed at epoch={start_epoch}, best_score={best_score:.6f}, best_threshold={best_threshold:.4f}")
+    
+        model = state.model
+        optimizer = state.optimizer
+        scheduler = state.scheduler
+        start_epoch = state.start_epoch
+        best_score = state.best_score
+        best_threshold = state.best_threshold
+    
+        print(
+            f"Resumed at epoch={start_epoch}, "
+            f"best_score={best_score:.6f}, "
+            f"best_threshold={best_threshold:.4f}"
+        )
 
     best_metric_name = str(cfg.get("best_metric_name", "val_best_f1"))
     use_amp = bool(cfg.get("use_amp", True))
@@ -877,13 +912,17 @@ def main():
     best_ckpt_path = str(Path(cfg["checkpoint_dir"]) / "best.pt")
     print(f"\nLoading best checkpoint for final test: {best_ckpt_path}")
 
-    model, _, _, _, best_score_loaded, best_threshold_loaded = load_checkpoint(
+    state = load_checkpoint(
         path=best_ckpt_path,
         model=model,
         optimizer=None,
         scheduler=None,
         map_location=device,
     )
+    
+    model = state.model
+    best_score_loaded = state.best_score
+    best_threshold_loaded = state.best_threshold
 
     test_metrics = evaluate_on_test(
         model=model,
