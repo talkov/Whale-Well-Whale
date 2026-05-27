@@ -1,0 +1,13 @@
+numpy
+pandas
+tqdm
+PyYAML
+scikit-learn
+torch
+torchvision
+librosa
+soundfile
+scipy
+opencv-python
+Pillow
+wandb
